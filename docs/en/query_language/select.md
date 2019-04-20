@@ -46,39 +46,23 @@ The FINAL modifier can be used only for a SELECT from a CollapsingMergeTree tabl
 
 ### SAMPLE Clause {#select-sample-clause}
 
-The `SAMPLE` clause allows for approximated query processing. 
-
-When data sampling is enabled, the query is not performed on all the data, but only on a certain fraction of data (sample). For example, if you need to calculate statistics for all the visits, it is enough to execute the query on the 1/10 fraction of all the visits and then multiply the result by 10.
-
-Approximated query processing can be useful in the following cases:
-
-- When you have strict timing requirements (like <100ms) but you can't justify the cost of additional hardware resources to meet them.
-- When your raw data is not accurate, so approximation doesn't noticeably degrade the quality.
-- Business requirements target approximate results (for cost-effectiveness, or in order to market exact results to premium users).
-
-!!! note
-    You can only use sampling with the tables in the [MergeTree](../operations/table_engines/mergetree.md) family, and only if the sampling expression was specified during table creation (see [MergeTree engine](../operations/table_engines/mergetree.md#table_engine-mergetree-creating-a-table)).
+The `SAMPLE` clause allows for approximated query processing. Approximated query processing is only supported by the tables in the `MergeTree` family, and only if the sampling expression was specified during table creation (see [MergeTree engine](../operations/table_engines/mergetree.md)).
 
 The features of data sampling are listed below:
 
 - Data sampling is a deterministic mechanism. The result of the same `SELECT .. SAMPLE` query is always the same.
-- Sampling works consistently for different tables. For tables with a single sampling key, a sample with the same coefficient always selects the same subset of possible data. For example, a sample of user IDs takes rows with the same subset of all the possible user IDs from different tables. This means that you can use the sample in subqueries in the [IN](#select-in-operators) clause. Also, you can join samples using the [JOIN](#select-join) clause.
-- Sampling allows reading less data from a disk. Note that you must specify the sampling key correctly. For more information, see [Creating a MergeTree Table](../operations/table_engines/mergetree.md#table_engine-mergetree-creating-a-table).
+- Sampling works consistently for different tables. For tables with a single sampling key, a sample with the same coefficient always selects the same subset of possible data. For example, a sample of user IDs takes rows with the same subset of all the possible user IDs from different tables. This allows using the sample in subqueries in the `IN` clause, as well as for manually correlating results of different queries with samples.
+- Sampling allows reading less data from a disk. Note that for this you must specify the sampling key correctly. For more details see [Creating a MergeTree Table](../operations/table_engines/mergetree.md#table_engine-mergetree-creating-a-table).
 
-For the `SAMPLE` clause the following syntax is supported:
+The `SAMPLE` clause can be specified in several ways:
 
-| SAMPLE&#160;Clause&#160;Syntax | Description | 
-| ---------------- | --------- | 
-| `SAMPLE k` | Here `k` is the number from 0 to 1.</br>The query is executed on `k` fraction of data. For example, `SAMPLE 0.1` runs the query on 10% of data. [Read more](#select-sample-k)|
-| `SAMPLE n` | Here `n` is a sufficiently large integer.</br>The query is executed on a sample of at least `n` rows (but not significantly more than this). For example, `SAMPLE 10000000` runs the query on a minimum of 10,000,000 rows. [Read more](#select-sample-n) |
-| `SAMPLE k OFFSET m` | Here `k` and `m` are the numbers from 0 to 1.</br>The query is executed on a sample of `k` fraction of the data. The data used for the sample is offset by `m` fraction. [Read more](#select-sample-offset) | 
-
+- `SAMPLE k`, where `k` is a decimal number from 0 to 1. The query is executed on `k` percent of data. For example, `SAMPLE 0.1` runs the query on 10% of data. [Read more](#select-sample-k)
+- `SAMPLE n`, where `n` is a sufficiently large integer. The query is executed on a sample of at least `n` rows (but not significantly more than this). For example, `SAMPLE 10000000` runs the query on a minimum of 10,000,000 rows. [Read more](#select-sample-n)
+- `SAMPLE k OFFSET m` where `k` and `m` are numbers from 0 to 1. The query is executed on a sample of `k` percent of the data. The data used for the sample is offset by `m` percent. [Read more](#select-sample-offset)
 
 #### SAMPLE k {#select-sample-k}
 
-Here `k` is the number from 0 to 1 (both fractional and decimal notations are supported). For example, `SAMPLE 1/2` or `SAMPLE 0.5`.
-
-In a `SAMPLE k` clause, the sample is taken from the `k` fraction of data. The example is shown below:
+In a `SAMPLE k` clause, `k` is a percent amount of data that the sample is taken from. The example is shown below:
 
 ``` sql
 SELECT
@@ -92,29 +76,25 @@ GROUP BY Title
 ORDER BY PageViews DESC LIMIT 1000
 ```
 
-In this example, the query is executed on a sample from 0.1 (10%) of data. Values of aggregate functions are not corrected automatically, so to get an approximate result, the value `count()` is manually multiplied by 10.
+In this example, the query is executed on a sample from 0.1 (10%) of data. Values of aggregate functions are not corrected automatically, so to get an approximate result, the value 'count()' is manually multiplied by 10.
 
 #### SAMPLE n {#select-sample-n}
 
-Here `n` is a sufficiently large integer. For example, `SAMPLE 10000000`.
-
-In this case, the query is executed on a sample of at least `n` rows (but not significantly more than this). For example, `SAMPLE 10000000` runs the query on a minimum of 10,000,000 rows.
+In this case, the query is executed on a sample of at least `n` rows, where `n` is a sufficiently large integer. For example, `SAMPLE 10000000`.
 
 Since the minimum unit for data reading is one granule (its size is set by the `index_granularity` setting), it makes sense to set a sample that is much larger than the size of the granule.
 
-When using the `SAMPLE n` clause, you don't know which relative percent of data was processed. So you don't know the coefficient the aggregate functions should be multiplied by. Use the `_sample_factor` virtual column to get the approximate result.
+When using the `SAMPLE n` clause, the relative coefficient is calculated dynamically. Since you do not know which relative percent of data was processed, you do not know the coefficient the aggregate functions should be multiplied by (for example, you do not know if the `SAMPLE 1000000` was taken from a set of 10,000,000 rows or from a set of 1,000,000,000 rows). In this case, use the `_sample_factor` column to get the approximate result.
 
-The `_sample_factor` column contains relative coefficients that are calculated dynamically. This column is created automatically when you [create](../operations/table_engines/mergetree.md#table_engine-mergetree-creating-a-table) a table with the specified sampling key. The usage examples of the `_sample_factor` column are shown below.
-
-Let's consider the table `visits`, which contains the statistics about site visits. The first example shows how to calculate the number of page views:
+The `_sample_factor` is a virtual column that ClickHouse stores relative coefficients in. This column is created automatically when you create a table with the specified sampling key. The usage example is shown below:
 
 ``` sql
-SELECT sum(PageViews * _sample_factor)
+SELECT sum(Duration * _sample_factor)
 FROM visits
 SAMPLE 10000000
 ```   
 
-The next example shows how to calculate the total number of visits:
+If you need to get the approximate count of rows in a `SELECT .. SAMPLE n` query, get the sum() of `_sample_factor` column instead of counting `count(column * _sample_factor)` value. For example:
 
 ``` sql
 SELECT sum(_sample_factor)
@@ -122,7 +102,7 @@ FROM visits
 SAMPLE 10000000
 ```  
 
-The example below shows how to calculate the average session duration. Note that you don't need to use the relative coefficient to calculate the average values.
+Note that to calculate the average in a `SELECT .. SAMPLE n` query, you do not need to use `_sample_factor` column:
 
 ``` sql
 SELECT avg(Duration)
@@ -132,25 +112,25 @@ SAMPLE 10000000
  
 #### SAMPLE k OFFSET m {#select-sample-offset}
 
-Here `k` and `m` are numbers from 0 to 1. Examples are shown below.
+You can specify the `SAMPLE k OFFSET m` clause, where `k` and `m` are numbers from 0 to 1. Examples are shown below.
 
-**Example 1**
+Example 1.
 
 ``` sql
 SAMPLE 1/10
 ```
 
-In this example, the sample is 1/10th of all data:
+In this example, the sample is the 1/10th of all data:
 
 `[++------------------]`
 
-**Example 2**
+Example 2.
 
 ``` sql
 SAMPLE 1/10 OFFSET 1/2
 ```
 
-Here, a sample of 10% is taken from the second half of the data.
+Here, the sample of 10% is taken from the second half of data.
 
 `[----------++--------]`
 
@@ -168,14 +148,14 @@ FROM <left_subquery>
 
 You can specify only a single `ARRAY JOIN` clause in a query.
 
-When running the `ARRAY JOIN`, there is an optimization of the query execution order. Although the `ARRAY JOIN` must be always specified before the `WHERE/PREWHERE` clause, it can be performed as before the `WHERE/PREWHERE` (if its result is needed in this clause), as after completing it (to reduce the volume of calculations). The processing order is controlled by the query optimizer.
+The query execution order is optimized when running `ARRAY JOIN`. Although `ARRAY JOIN` must always be specified before the `WHERE/PREWHERE` clause, it can be performed either before `WHERE/PREWHERE` (if the result is needed in this clause), or after completing it (to reduce the volume of calculations). The processing order is controlled by the query optimizer.
 
 Supported types of `ARRAY JOIN` are listed below:
 
-- `ARRAY JOIN` - Executing `JOIN` with an array or nested data structure. Empty arrays are not included in the result.
-- `LEFT ARRAY JOIN` - Unlike `ARRAY JOIN`, when using the `LEFT ARRAY JOIN` the result contains the rows with empty arrays. The value for an empty array is set to default value for an array element type (usually 0, empty string or NULL).
+- `ARRAY JOIN` - Executes `JOIN` with an array or nested data structure. Empty arrays are not included in the result.
+- `LEFT ARRAY JOIN` - The result contains rows with empty arrays, unlike `ARRAY JOIN`. The value for an empty array is set to the default value for the array element type (usually 0, empty string or NULL).
 
-Examples below demonstrate the usage of the `ARRAY JOIN` clause. Let's create a table with an [Array](../data_types/array.md) type column and insert values into it:
+The examples below demonstrate the usage of the `ARRAY JOIN` clause. Let's create a table with an [Array](../data_types/array.md) type column and insert values into it:
 
 ``` sql
 CREATE TABLE arrays_test
@@ -188,14 +168,14 @@ INSERT INTO arrays_test
 VALUES ('Hello', [1,2]), ('World', [3,4,5]), ('Goodbye', []);
 ```
 ```
-┌─s───────────┬─arr─────┐
-│ Hello       │ [1,2]   │
-│ World       │ [3,4,5] │
-│ Goodbye     │ []      │
-└─────────────┴─────────┘
+в”Њв”Ђsв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”¬в”Ђarrв”Ђв”Ђв”Ђв”Ђв”Ђв”ђ
+в”‚ Hello       в”‚ [1,2]   в”‚
+в”‚ World       в”‚ [3,4,5] в”‚
+в”‚ Goodbye     в”‚ []      в”‚
+в””в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”ґв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”
 ```
 
-The first example shows using the `ARRAY JOIN` clause:
+The first example uses the `ARRAY JOIN` clause:
 
 ``` sql
 SELECT s, arr
@@ -203,16 +183,16 @@ FROM arrays_test
 ARRAY JOIN arr;
 ```
 ```
-┌─s─────┬─arr─┐
-│ Hello │   1 │
-│ Hello │   2 │
-│ World │   3 │
-│ World │   4 │
-│ World │   5 │
-└───────┴─────┘
+в”Њв”Ђsв”Ђв”Ђв”Ђв”Ђв”Ђв”¬в”Ђarrв”Ђв”ђ
+в”‚ Hello в”‚   1 в”‚
+в”‚ Hello в”‚   2 в”‚
+в”‚ World в”‚   3 в”‚
+в”‚ World в”‚   4 в”‚
+в”‚ World в”‚   5 в”‚
+в””в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”ґв”Ђв”Ђв”Ђв”Ђв”Ђв”
 ```
 
-The second example shows using the `LEFT ARRAY JOIN` clause:
+The second example uses the `LEFT ARRAY JOIN` clause:
 
 ``` sql
 SELECT s, arr
@@ -220,17 +200,17 @@ FROM arrays_test
 LEFT ARRAY JOIN arr;
 ```
 ``` 
-┌─s───────────┬─arr─┐
-│ Hello       │   1 │
-│ Hello       │   2 │
-│ World       │   3 │
-│ World       │   4 │
-│ World       │   5 │
-│ Goodbye     │   0 │
-└─────────────┴─────┘
+в”Њв”Ђsв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”¬в”Ђarrв”Ђв”ђ
+в”‚ Hello       в”‚   1 в”‚
+в”‚ Hello       в”‚   2 в”‚
+в”‚ World       в”‚   3 в”‚
+в”‚ World       в”‚   4 в”‚
+в”‚ World       в”‚   5 в”‚
+в”‚ Goodbye     в”‚   0 в”‚
+в””в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”ґв”Ђв”Ђв”Ђв”Ђв”Ђв”
 ``` 
 
-The next example demonstrates using the `ARRAY JOIN` with the external array:
+The following example uses `ARRAY JOIN` with an external array:
 
 ``` sql
 SELECT s, arr_external
@@ -239,22 +219,22 @@ ARRAY JOIN [1, 2, 3] AS arr_external;
 ```
 
 ```
-┌─s───────────┬─arr_external─┐
-│ Hello       │            1 │
-│ Hello       │            2 │
-│ Hello       │            3 │
-│ World       │            1 │
-│ World       │            2 │
-│ World       │            3 │
-│ Goodbye     │            1 │
-│ Goodbye     │            2 │
-│ Goodbye     │            3 │
-└─────────────┴──────────────┘
+в”Њв”Ђsв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”¬в”Ђarr_externalв”Ђв”ђ
+в”‚ Hello       в”‚            1 в”‚
+в”‚ Hello       в”‚            2 в”‚
+в”‚ Hello       в”‚            3 в”‚
+в”‚ World       в”‚            1 в”‚
+в”‚ World       в”‚            2 в”‚
+в”‚ World       в”‚            3 в”‚
+в”‚ Goodbye     в”‚            1 в”‚
+в”‚ Goodbye     в”‚            2 в”‚
+в”‚ Goodbye     в”‚            3 в”‚
+в””в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”ґв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”
 ```
 
 #### Using Aliases
 
-An alias can be specified for an array in the `ARRAY JOIN` clause. In this case, an array item can be accessed by this alias, but the array itself by the original name. Example:
+An alias can be specified for an array in the `ARRAY JOIN` clause. In this case, an array item can be accessed by this alias, but the array itself is accessed by the original name. Example:
 
 ``` sql
 SELECT s, arr, a
@@ -263,13 +243,13 @@ ARRAY JOIN arr AS a;
 ```
 
 ``` 
-┌─s─────┬─arr─────┬─a─┐
-│ Hello │ [1,2]   │ 1 │
-│ Hello │ [1,2]   │ 2 │
-│ World │ [3,4,5] │ 3 │
-│ World │ [3,4,5] │ 4 │
-│ World │ [3,4,5] │ 5 │
-└───────┴─────────┴───┘
+в”Њв”Ђsв”Ђв”Ђв”Ђв”Ђв”Ђв”¬в”Ђarrв”Ђв”Ђв”Ђв”Ђв”Ђв”¬в”Ђaв”Ђв”ђ
+в”‚ Hello в”‚ [1,2]   в”‚ 1 в”‚
+в”‚ Hello в”‚ [1,2]   в”‚ 2 в”‚
+в”‚ World в”‚ [3,4,5] в”‚ 3 в”‚
+в”‚ World в”‚ [3,4,5] в”‚ 4 в”‚
+в”‚ World в”‚ [3,4,5] в”‚ 5 в”‚
+в””в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”ґв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”ґв”Ђв”Ђв”Ђв”
 ```
 
 Multiple arrays of the same size can be comma-separated in the `ARRAY JOIN` clause. In this case, `JOIN` is performed with them simultaneously (the direct sum, not the cartesian product). Example:
@@ -281,13 +261,13 @@ ARRAY JOIN arr AS a, arrayEnumerate(arr) AS num, arrayMap(x -> x + 1, arr) AS ma
 ```
 
 ```
-┌─s─────┬─arr─────┬─a─┬─num─┬─mapped─┐
-│ Hello │ [1,2]   │ 1 │   1 │      2 │
-│ Hello │ [1,2]   │ 2 │   2 │      3 │
-│ World │ [3,4,5] │ 3 │   1 │      4 │
-│ World │ [3,4,5] │ 4 │   2 │      5 │
-│ World │ [3,4,5] │ 5 │   3 │      6 │
-└───────┴─────────┴───┴─────┴────────┘
+в”Њв”Ђsв”Ђв”Ђв”Ђв”Ђв”Ђв”¬в”Ђarrв”Ђв”Ђв”Ђв”Ђв”Ђв”¬в”Ђaв”Ђв”¬в”Ђnumв”Ђв”¬в”Ђmappedв”Ђв”ђ
+в”‚ Hello в”‚ [1,2]   в”‚ 1 в”‚   1 в”‚      2 в”‚
+в”‚ Hello в”‚ [1,2]   в”‚ 2 в”‚   2 в”‚      3 в”‚
+в”‚ World в”‚ [3,4,5] в”‚ 3 в”‚   1 в”‚      4 в”‚
+в”‚ World в”‚ [3,4,5] в”‚ 4 в”‚   2 в”‚      5 в”‚
+в”‚ World в”‚ [3,4,5] в”‚ 5 в”‚   3 в”‚      6 в”‚
+в””в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”ґв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”ґв”Ђв”Ђв”Ђв”ґв”Ђв”Ђв”Ђв”Ђв”Ђв”ґв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”
 ```
 
 ``` sql
@@ -297,18 +277,18 @@ ARRAY JOIN arr AS a, arrayEnumerate(arr) AS num;
 ```
 
 ```
-┌─s─────┬─arr─────┬─a─┬─num─┬─arrayEnumerate(arr)─┐
-│ Hello │ [1,2]   │ 1 │   1 │ [1,2]               │
-│ Hello │ [1,2]   │ 2 │   2 │ [1,2]               │
-│ World │ [3,4,5] │ 3 │   1 │ [1,2,3]             │
-│ World │ [3,4,5] │ 4 │   2 │ [1,2,3]             │
-│ World │ [3,4,5] │ 5 │   3 │ [1,2,3]             │
-└───────┴─────────┴───┴─────┴─────────────────────┘
+в”Њв”Ђsв”Ђв”Ђв”Ђв”Ђв”Ђв”¬в”Ђarrв”Ђв”Ђв”Ђв”Ђв”Ђв”¬в”Ђaв”Ђв”¬в”Ђnumв”Ђв”¬в”ЂarrayEnumerate(arr)в”Ђв”ђ
+в”‚ Hello в”‚ [1,2]   в”‚ 1 в”‚   1 в”‚ [1,2]               в”‚
+в”‚ Hello в”‚ [1,2]   в”‚ 2 в”‚   2 в”‚ [1,2]               в”‚
+в”‚ World в”‚ [3,4,5] в”‚ 3 в”‚   1 в”‚ [1,2,3]             в”‚
+в”‚ World в”‚ [3,4,5] в”‚ 4 в”‚   2 в”‚ [1,2,3]             в”‚
+в”‚ World в”‚ [3,4,5] в”‚ 5 в”‚   3 в”‚ [1,2,3]             в”‚
+в””в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”ґв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”ґв”Ђв”Ђв”Ђв”ґв”Ђв”Ђв”Ђв”Ђв”Ђв”ґв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”
 ```
 
 #### ARRAY JOIN With Nested Data Structure
 
-`ARRAY JOIN` also works with [nested data structure](../data_types/nested_data_structures/nested.md). Example:
+`ARRAY JOIN` also works with [nested data structures](../data_types/nested_data_structures/nested.md). Example:
 
 ``` sql
 CREATE TABLE nested_test
@@ -324,11 +304,11 @@ VALUES ('Hello', [1,2], [10,20]), ('World', [3,4,5], [30,40,50]), ('Goodbye', []
 ```
 
 ``` 
-┌─s───────┬─nest.x──┬─nest.y─────┐
-│ Hello   │ [1,2]   │ [10,20]    │
-│ World   │ [3,4,5] │ [30,40,50] │
-│ Goodbye │ []      │ []         │
-└─────────┴─────────┴────────────┘
+в”Њв”Ђsв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”¬в”Ђnest.xв”Ђв”Ђв”¬в”Ђnest.yв”Ђв”Ђв”Ђв”Ђв”Ђв”ђ
+в”‚ Hello   в”‚ [1,2]   в”‚ [10,20]    в”‚
+в”‚ World   в”‚ [3,4,5] в”‚ [30,40,50] в”‚
+в”‚ Goodbye в”‚ []      в”‚ []         в”‚
+в””в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”ґв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”ґв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”
 ```
 
 ``` sql
@@ -338,13 +318,13 @@ ARRAY JOIN nest;
 ```
 
 ``` 
-┌─s─────┬─nest.x─┬─nest.y─┐
-│ Hello │      1 │     10 │
-│ Hello │      2 │     20 │
-│ World │      3 │     30 │
-│ World │      4 │     40 │
-│ World │      5 │     50 │
-└───────┴────────┴────────┘
+в”Њв”Ђsв”Ђв”Ђв”Ђв”Ђв”Ђв”¬в”Ђnest.xв”Ђв”¬в”Ђnest.yв”Ђв”ђ
+в”‚ Hello в”‚      1 в”‚     10 в”‚
+в”‚ Hello в”‚      2 в”‚     20 в”‚
+в”‚ World в”‚      3 в”‚     30 в”‚
+в”‚ World в”‚      4 в”‚     40 в”‚
+в”‚ World в”‚      5 в”‚     50 в”‚
+в””в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”ґв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”ґв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”
 ```
 
 When specifying names of nested data structures in `ARRAY JOIN`, the meaning is the same as `ARRAY JOIN` with all the array elements that it consists of. Examples are listed below:
@@ -356,13 +336,13 @@ ARRAY JOIN `nest.x`, `nest.y`;
 ```
 
 ``` 
-┌─s─────┬─nest.x─┬─nest.y─┐
-│ Hello │      1 │     10 │
-│ Hello │      2 │     20 │
-│ World │      3 │     30 │
-│ World │      4 │     40 │
-│ World │      5 │     50 │
-└───────┴────────┴────────┘
+в”Њв”Ђsв”Ђв”Ђв”Ђв”Ђв”Ђв”¬в”Ђnest.xв”Ђв”¬в”Ђnest.yв”Ђв”ђ
+в”‚ Hello в”‚      1 в”‚     10 в”‚
+в”‚ Hello в”‚      2 в”‚     20 в”‚
+в”‚ World в”‚      3 в”‚     30 в”‚
+в”‚ World в”‚      4 в”‚     40 в”‚
+в”‚ World в”‚      5 в”‚     50 в”‚
+в””в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”ґв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”ґв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”
 ```
 
 This variation also makes sense:
@@ -374,13 +354,13 @@ ARRAY JOIN `nest.x`;
 ```
 
 ``` 
-┌─s─────┬─nest.x─┬─nest.y─────┐
-│ Hello │      1 │ [10,20]    │
-│ Hello │      2 │ [10,20]    │
-│ World │      3 │ [30,40,50] │
-│ World │      4 │ [30,40,50] │
-│ World │      5 │ [30,40,50] │
-└───────┴────────┴────────────┘
+в”Њв”Ђsв”Ђв”Ђв”Ђв”Ђв”Ђв”¬в”Ђnest.xв”Ђв”¬в”Ђnest.yв”Ђв”Ђв”Ђв”Ђв”Ђв”ђ
+в”‚ Hello в”‚      1 в”‚ [10,20]    в”‚
+в”‚ Hello в”‚      2 в”‚ [10,20]    в”‚
+в”‚ World в”‚      3 в”‚ [30,40,50] в”‚
+в”‚ World в”‚      4 в”‚ [30,40,50] в”‚
+в”‚ World в”‚      5 в”‚ [30,40,50] в”‚
+в””в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”ґв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”ґв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”
 ```
 
 An alias may be used for a nested data structure, in order to select either the `JOIN` result or the source array. Example:
@@ -392,16 +372,16 @@ ARRAY JOIN nest AS n;
 ```
 
 ``` 
-┌─s─────┬─n.x─┬─n.y─┬─nest.x──┬─nest.y─────┐
-│ Hello │   1 │  10 │ [1,2]   │ [10,20]    │
-│ Hello │   2 │  20 │ [1,2]   │ [10,20]    │
-│ World │   3 │  30 │ [3,4,5] │ [30,40,50] │
-│ World │   4 │  40 │ [3,4,5] │ [30,40,50] │
-│ World │   5 │  50 │ [3,4,5] │ [30,40,50] │
-└───────┴─────┴─────┴─────────┴────────────┘
+в”Њв”Ђsв”Ђв”Ђв”Ђв”Ђв”Ђв”¬в”Ђn.xв”Ђв”¬в”Ђn.yв”Ђв”¬в”Ђnest.xв”Ђв”Ђв”¬в”Ђnest.yв”Ђв”Ђв”Ђв”Ђв”Ђв”ђ
+в”‚ Hello в”‚   1 в”‚  10 в”‚ [1,2]   в”‚ [10,20]    в”‚
+в”‚ Hello в”‚   2 в”‚  20 в”‚ [1,2]   в”‚ [10,20]    в”‚
+в”‚ World в”‚   3 в”‚  30 в”‚ [3,4,5] в”‚ [30,40,50] в”‚
+в”‚ World в”‚   4 в”‚  40 в”‚ [3,4,5] в”‚ [30,40,50] в”‚
+в”‚ World в”‚   5 в”‚  50 в”‚ [3,4,5] в”‚ [30,40,50] в”‚
+в””в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”ґв”Ђв”Ђв”Ђв”Ђв”Ђв”ґв”Ђв”Ђв”Ђв”Ђв”Ђв”ґв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”ґв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”
 ```
 
-The example of using the [arrayEnumerate](functions/array_functions.md#array_functions-arrayenumerate) function:
+Example of using the [arrayEnumerate](functions/array_functions.md#array_functions-arrayenumerate) function:
 
 ``` sql
 SELECT s, `n.x`, `n.y`, `nest.x`, `nest.y`, num
@@ -410,13 +390,13 @@ ARRAY JOIN nest AS n, arrayEnumerate(`nest.x`) AS num;
 ```
 
 ``` 
-┌─s─────┬─n.x─┬─n.y─┬─nest.x──┬─nest.y─────┬─num─┐
-│ Hello │   1 │  10 │ [1,2]   │ [10,20]    │   1 │
-│ Hello │   2 │  20 │ [1,2]   │ [10,20]    │   2 │
-│ World │   3 │  30 │ [3,4,5] │ [30,40,50] │   1 │
-│ World │   4 │  40 │ [3,4,5] │ [30,40,50] │   2 │
-│ World │   5 │  50 │ [3,4,5] │ [30,40,50] │   3 │
-└───────┴─────┴─────┴─────────┴────────────┴─────┘
+в”Њв”Ђsв”Ђв”Ђв”Ђв”Ђв”Ђв”¬в”Ђn.xв”Ђв”¬в”Ђn.yв”Ђв”¬в”Ђnest.xв”Ђв”Ђв”¬в”Ђnest.yв”Ђв”Ђв”Ђв”Ђв”Ђв”¬в”Ђnumв”Ђв”ђ
+в”‚ Hello в”‚   1 в”‚  10 в”‚ [1,2]   в”‚ [10,20]    в”‚   1 в”‚
+в”‚ Hello в”‚   2 в”‚  20 в”‚ [1,2]   в”‚ [10,20]    в”‚   2 в”‚
+в”‚ World в”‚   3 в”‚  30 в”‚ [3,4,5] в”‚ [30,40,50] в”‚   1 в”‚
+в”‚ World в”‚   4 в”‚  40 в”‚ [3,4,5] в”‚ [30,40,50] в”‚   2 в”‚
+в”‚ World в”‚   5 в”‚  50 в”‚ [3,4,5] в”‚ [30,40,50] в”‚   3 в”‚
+в””в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”ґв”Ђв”Ђв”Ђв”Ђв”Ђв”ґв”Ђв”Ђв”Ђв”Ђв”Ђв”ґв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”ґв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”ґв”Ђв”Ђв”Ђв”Ђв”Ђв”
 ```
 
 ### JOIN Clause {#select-join}
@@ -434,7 +414,7 @@ FROM <left_subquery>
 (ON <expr_list>)|(USING <column_list>) ...
 ```
 
-The table names can be specified instead of `<left_subquery>` and `<right_subquery>`. This is equivalent to the `SELECT * FROM table` subquery, except in a special case when the table has the [Join](../operations/table_engines/join.md) engine – an array prepared for joining.
+The table names can be specified instead of `<left_subquery>` and `<right_subquery>`. This is equivalent to the `SELECT * FROM table` subquery, except in a special case when the table has the [Join](../operations/table_engines/join.md) engine вЂ“ an array prepared for joining.
 
 **Supported types of `JOIN`**
 
@@ -444,7 +424,7 @@ The table names can be specified instead of `<left_subquery>` and `<right_subque
 - `FULL JOIN` (or `FULL OUTER JOIN`)
 - `CROSS JOIN` (or `,` )
 
-See standard [SQL JOIN](https://en.wikipedia.org/wiki/Join_(SQL)) description.
+See the standard [SQL JOIN](https://en.wikipedia.org/wiki/Join_(SQL)) description.
 
 **ANY or ALL strictness**
 
@@ -494,18 +474,18 @@ LIMIT 10
 ```
 
 ```
-┌─CounterID─┬───hits─┬─visits─┐
-│   1143050 │ 523264 │  13665 │
-│    731962 │ 475698 │ 102716 │
-│    722545 │ 337212 │ 108187 │
-│    722889 │ 252197 │  10547 │
-│   2237260 │ 196036 │   9522 │
-│  23057320 │ 147211 │   7689 │
-│    722818 │  90109 │  17847 │
-│     48221 │  85379 │   4652 │
-│  19762435 │  77807 │   7026 │
-│    722884 │  77492 │  11056 │
-└───────────┴────────┴────────┘
+в”Њв”ЂCounterIDв”Ђв”¬в”Ђв”Ђв”Ђhitsв”Ђв”¬в”Ђvisitsв”Ђв”ђ
+в”‚   1143050 в”‚ 523264 в”‚  13665 в”‚
+в”‚    731962 в”‚ 475698 в”‚ 102716 в”‚
+в”‚    722545 в”‚ 337212 в”‚ 108187 в”‚
+в”‚    722889 в”‚ 252197 в”‚  10547 в”‚
+в”‚   2237260 в”‚ 196036 в”‚   9522 в”‚
+в”‚  23057320 в”‚ 147211 в”‚   7689 в”‚
+в”‚    722818 в”‚  90109 в”‚  17847 в”‚
+в”‚     48221 в”‚  85379 в”‚   4652 в”‚
+в”‚  19762435 в”‚  77807 в”‚   7026 в”‚
+в”‚    722884 в”‚  77492 в”‚  11056 в”‚
+в””в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”ґв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”ґв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”
 ```
 
 Subqueries don't allow you to set names or use them for referencing a column from a specific subquery.
@@ -601,26 +581,26 @@ Here's an example to show what this means.
 Assume you have this table:
 
 ```
-┌─x─┬────y─┐
-│ 1 │    2 │
-│ 2 │ ᴺᵁᴸᴸ │
-│ 3 │    2 │
-│ 3 │    3 │
-│ 3 │ ᴺᵁᴸᴸ │
-└───┴──────┘
+в”Њв”Ђxв”Ђв”¬в”Ђв”Ђв”Ђв”Ђyв”Ђв”ђ
+в”‚ 1 в”‚    2 в”‚
+в”‚ 2 в”‚ бґєбµЃбґёбґё в”‚
+в”‚ 3 в”‚    2 в”‚
+в”‚ 3 в”‚    3 в”‚
+в”‚ 3 в”‚ бґєбµЃбґёбґё в”‚
+в””в”Ђв”Ђв”Ђв”ґв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”
 ```
 
 The query `SELECT sum(x), y FROM t_null_big GROUP BY y` results in:
 
 ```
-┌─sum(x)─┬────y─┐
-│      4 │    2 │
-│      3 │    3 │
-│      5 │ ᴺᵁᴸᴸ │
-└────────┴──────┘
+в”Њв”Ђsum(x)в”Ђв”¬в”Ђв”Ђв”Ђв”Ђyв”Ђв”ђ
+в”‚      4 в”‚    2 в”‚
+в”‚      3 в”‚    3 в”‚
+в”‚      5 в”‚ бґєбµЃбґёбґё в”‚
+в””в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”ґв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”
 ```
 
-You can see that `GROUP BY` for `У = NULL` summed up `x`, as if `NULL` is this value.
+You can see that `GROUP BY` for `РЈ = NULL` summed up `x`, as if `NULL` is this value.
 
 If you pass several keys to `GROUP BY`, the result will give you all the combinations of the selection, as if `NULL` were a specific value.
 
@@ -637,13 +617,13 @@ By default, `totals_mode = 'before_having'`. In this case, 'totals' is calculate
 
 The other alternatives include only the rows that pass through HAVING in 'totals', and behave differently with the setting `max_rows_to_group_by` and `group_by_overflow_mode = 'any'`.
 
-`after_having_exclusive` – Don't include rows that didn't pass through `max_rows_to_group_by`. In other words, 'totals' will have less than or the same number of rows as it would if `max_rows_to_group_by` were omitted.
+`after_having_exclusive` вЂ“ Don't include rows that didn't pass through `max_rows_to_group_by`. In other words, 'totals' will have less than or the same number of rows as it would if `max_rows_to_group_by` were omitted.
 
-`after_having_inclusive` – Include all the rows that didn't pass through 'max_rows_to_group_by' in 'totals'. In other words, 'totals' will have more than or the same number of rows as it would if `max_rows_to_group_by` were omitted.
+`after_having_inclusive` вЂ“ Include all the rows that didn't pass through 'max_rows_to_group_by' in 'totals'. In other words, 'totals' will have more than or the same number of rows as it would if `max_rows_to_group_by` were omitted.
 
-`after_having_auto` – Count the number of rows that passed through HAVING. If it is more than a certain amount (by default, 50%), include all the rows that didn't pass through 'max_rows_to_group_by' in 'totals'. Otherwise, do not include them.
+`after_having_auto` вЂ“ Count the number of rows that passed through HAVING. If it is more than a certain amount (by default, 50%), include all the rows that didn't pass through 'max_rows_to_group_by' in 'totals'. Otherwise, do not include them.
 
-`totals_auto_threshold` – By default, 0.5. The coefficient for `after_having_auto`.
+`totals_auto_threshold` вЂ“ By default, 0.5. The coefficient for `after_having_auto`.
 
 If `max_rows_to_group_by` and `group_by_overflow_mode = 'any'` are not used, all variations of `after_having` are the same, and you can use any of them (for example, `after_having_auto`).
 
@@ -708,44 +688,44 @@ If the ORDER BY clause is omitted, the order of the rows is also undefined, and 
 
 `NaN` and `NULL` sorting order:
 
-- With the modifier `NULLS FIRST` — First `NULL`, then `NaN`, then other values.
-- With the modifier `NULLS LAST` — First the values, then `NaN`, then `NULL`.
-- Default — The same as with the `NULLS LAST` modifier.
+- With the modifier `NULLS FIRST` вЂ” First `NULL`, then `NaN`, then other values.
+- With the modifier `NULLS LAST` вЂ” First the values, then `NaN`, then `NULL`.
+- Default вЂ” The same as with the `NULLS LAST` modifier.
 
 Example:
 
 For the table
 
 ```
-┌─x─┬────y─┐
-│ 1 │ ᴺᵁᴸᴸ │
-│ 2 │    2 │
-│ 1 │  nan │
-│ 2 │    2 │
-│ 3 │    4 │
-│ 5 │    6 │
-│ 6 │  nan │
-│ 7 │ ᴺᵁᴸᴸ │
-│ 6 │    7 │
-│ 8 │    9 │
-└───┴──────┘
+в”Њв”Ђxв”Ђв”¬в”Ђв”Ђв”Ђв”Ђyв”Ђв”ђ
+в”‚ 1 в”‚ бґєбµЃбґёбґё в”‚
+в”‚ 2 в”‚    2 в”‚
+в”‚ 1 в”‚  nan в”‚
+в”‚ 2 в”‚    2 в”‚
+в”‚ 3 в”‚    4 в”‚
+в”‚ 5 в”‚    6 в”‚
+в”‚ 6 в”‚  nan в”‚
+в”‚ 7 в”‚ бґєбµЃбґёбґё в”‚
+в”‚ 6 в”‚    7 в”‚
+в”‚ 8 в”‚    9 в”‚
+в””в”Ђв”Ђв”Ђв”ґв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”
 ```
 
 Run the query `SELECT * FROM t_null_nan ORDER BY y NULLS FIRST` to get:
 
 ```
-┌─x─┬────y─┐
-│ 1 │ ᴺᵁᴸᴸ │
-│ 7 │ ᴺᵁᴸᴸ │
-│ 1 │  nan │
-│ 6 │  nan │
-│ 2 │    2 │
-│ 2 │    2 │
-│ 3 │    4 │
-│ 5 │    6 │
-│ 6 │    7 │
-│ 8 │    9 │
-└───┴──────┘
+в”Њв”Ђxв”Ђв”¬в”Ђв”Ђв”Ђв”Ђyв”Ђв”ђ
+в”‚ 1 в”‚ бґєбµЃбґёбґё в”‚
+в”‚ 7 в”‚ бґєбµЃбґёбґё в”‚
+в”‚ 1 в”‚  nan в”‚
+в”‚ 6 в”‚  nan в”‚
+в”‚ 2 в”‚    2 в”‚
+в”‚ 2 в”‚    2 в”‚
+в”‚ 3 в”‚    4 в”‚
+в”‚ 5 в”‚    6 в”‚
+в”‚ 6 в”‚    7 в”‚
+в”‚ 8 в”‚    9 в”‚
+в””в”Ђв”Ђв”Ђв”ґв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”
 ```
 
 When floating point numbers are sorted, NaNs are separate from the other values. Regardless of the sorting order, NaNs come at the end. In other words, for ascending sorting they are placed as if they are larger than all the other numbers, while for descending sorting they are placed as if they are smaller than the rest.
@@ -781,12 +761,11 @@ DISTINCT is not supported if SELECT has at least one array column.
 ### LIMIT Clause
 
 `LIMIT m` allows you to select the first `m` rows from the result.
-
-`LIMIT n, m` allows you to select the first `m` rows from the result after skipping the first `n` rows. The `LIMIT m OFFSET n` syntax is also supported.
+`LIMIT n`, m allows you to select the first `m` rows from the result after skipping the first `n` rows.
 
 `n` and `m` must be non-negative integers.
 
-If there isn't an `ORDER BY` clause that explicitly sorts results, the result may be arbitrary and nondeterministic.
+If there isn't an ORDER BY clause that explicitly sorts results, the result may be arbitrary and nondeterministic.
 
 ### UNION ALL Clause
 
@@ -881,15 +860,15 @@ ORDER BY EventDate ASC
 ```
 
 ```
-┌──EventDate─┬────ratio─┐
-│ 2014-03-17 │        1 │
-│ 2014-03-18 │ 0.807696 │
-│ 2014-03-19 │ 0.755406 │
-│ 2014-03-20 │ 0.723218 │
-│ 2014-03-21 │ 0.697021 │
-│ 2014-03-22 │ 0.647851 │
-│ 2014-03-23 │ 0.648416 │
-└────────────┴──────────┘
+в”Њв”Ђв”ЂEventDateв”Ђв”¬в”Ђв”Ђв”Ђв”Ђratioв”Ђв”ђ
+в”‚ 2014-03-17 в”‚        1 в”‚
+в”‚ 2014-03-18 в”‚ 0.807696 в”‚
+в”‚ 2014-03-19 в”‚ 0.755406 в”‚
+в”‚ 2014-03-20 в”‚ 0.723218 в”‚
+в”‚ 2014-03-21 в”‚ 0.697021 в”‚
+в”‚ 2014-03-22 в”‚ 0.647851 в”‚
+в”‚ 2014-03-23 в”‚ 0.648416 в”‚
+в””в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”ґв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”
 ```
 
 For each day after March 17th, count the percentage of pageviews made by users who visited the site on March 17th.
@@ -902,18 +881,18 @@ During request processing, the IN operator assumes that the result of an operati
 Here is an example with the `t_null` table:
 
 ```
-┌─x─┬────y─┐
-│ 1 │ ᴺᵁᴸᴸ │
-│ 2 │    3 │
-└───┴──────┘
+в”Њв”Ђxв”Ђв”¬в”Ђв”Ђв”Ђв”Ђyв”Ђв”ђ
+в”‚ 1 в”‚ бґєбµЃбґёбґё в”‚
+в”‚ 2 в”‚    3 в”‚
+в””в”Ђв”Ђв”Ђв”ґв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”
 ```
 
 Running the query `SELECT x FROM t_null WHERE y IN (NULL,3)` gives you the following result:
 
 ```
-┌─x─┐
-│ 2 │
-└───┘
+в”Њв”Ђxв”Ђв”ђ
+в”‚ 2 в”‚
+в””в”Ђв”Ђв”Ђв”
 ```
 
 You can see that the row in which `y = NULL` is thrown out of the query results. This is because ClickHouse can't decide whether `NULL` is included in the `(NULL,3)` set, returns `0` as the result of the operation, and `SELECT` excludes this row from the final output.
@@ -922,10 +901,10 @@ You can see that the row in which `y = NULL` is thrown out of the query results.
 SELECT y IN (NULL, 3)
 FROM t_null
 
-┌─in(y, tuple(NULL, 3))─┐
-│                     0 │
-│                     1 │
-└───────────────────────┘
+в”Њв”Ђin(y, tuple(NULL, 3))в”Ђв”ђ
+в”‚                     0 в”‚
+в”‚                     1 в”‚
+в””в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”
 ```
 
 
@@ -1034,7 +1013,7 @@ It also makes sense to specify a local table in the `GLOBAL IN` clause, in case 
 
 In addition to results, you can also get minimum and maximum values for the results columns. To do this, set the **extremes** setting to 1. Minimums and maximums are calculated for numeric types, dates, and dates with times. For other columns, the default values are output.
 
-An extra two rows are calculated – the minimums and maximums, respectively. These extra two rows are output in JSON\*, TabSeparated\*, and Pretty\* formats, separate from the other rows. They are not output for other formats.
+An extra two rows are calculated вЂ“ the minimums and maximums, respectively. These extra two rows are output in JSON\*, TabSeparated\*, and Pretty\* formats, separate from the other rows. They are not output for other formats.
 
 In JSON\* formats, the extreme values are output in a separate 'extremes' field. In TabSeparated\* formats, the row comes after the main result, and after 'totals' if present. It is preceded by an empty row (after the other data). In Pretty\* formats, the row is output as a separate table after the main result, and after 'totals' if present.
 
